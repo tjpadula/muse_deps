@@ -3,7 +3,7 @@
 #   - every consumed dep is appended to the EXTDEPS_CONSUMED global property
 #   - per-dep globals (<name>_INSTALL_LIBRARIES, <name>_PREFIX)
 
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.24)
 
 get_filename_component(EXTDEPS_DIR "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 
@@ -26,6 +26,9 @@ if (NOT DEFINED LIB_OS OR LIB_OS STREQUAL "")
         set(LIB_OS "windows")
     elseif (_extdeps_sys MATCHES "Darwin|macOS")
         set(LIB_OS "macos")
+    elseif (_extdeps_sys MATCHES "iOS")
+        set(LIB_OS "ios")
+        set(LIB_ARCH ${ARCH})
     else()
         set(LIB_OS "linux")
     endif()
@@ -76,11 +79,74 @@ if (EXTDEPS_CACHE)
     set(ENV{EXTDEPS_CACHE} "${EXTDEPS_CACHE}")
 endif()
 
+message (STATUS "CMAKE_SYSTEM_NAME: ${CMAKE_SYSTEM_NAME}")
+message (STATUS "CMAKE_SYSTEM_PROCESSOR: ${CMAKE_SYSTEM_PROCESSOR}")
+message (STATUS "_extdeps_sys: ${_extdeps_sys}")
+message (STATUS "_extdeps_proc: ${_extdeps_proc}")
+message (STATUS "LIB_OS: ${LIB_OS}")
+message (STATUS "LIB_ARCH: ${LIB_ARCH}")
+message (STATUS "EXTDEPS_BUILD_CONFIG: ${EXTDEPS_BUILD_CONFIG}")
+message (STATUS "EXTDEPS_OVERRIDE_ALL: ${EXTDEPS_OVERRIDE_ALL}")
+#message (FATAL_ERROR "Stop the noise.")
+
+function(_find_prebuilt_audio name _outPath _outFound)
+    set(${_outFound} FALSE PARENT_SCOPE)
+    if((name STREQUAL "ogg") OR (name STREQUAL "vorbis") OR (name STREQUAL "libsndfile"))
+    
+        message(STATUS "_find_prebuilt_audio library name: ${name}")
+            
+        if(CMAKE_OSX_SYSROOT MATCHES "imulator")
+            set(LIBSNDFILE_TARGET_OS "iphonesimulator")
+        elseif(CMAKE_OSX_SYSROOT MATCHES "phone")
+            set(LIBSNDFILE_TARGET_OS "iphoneos")
+        else()
+            message(FATAL_ERROR "Unable to determine iOS target for libsndfile.")
+        endif()
+
+        if (ARCH_IS_X86_64)
+            if (LIBSNDFILE_TARGET_OS MATCHES "iphoneos")
+                set(LIBSNDFILE_ARCHITECTURE "arm64")
+            else()
+                set(LIBSNDFILE_ARCHITECTURE "x86_64")
+            endif()
+        elseif(ARCH_IS_AARCH64)
+            # Here is where things get sticky. Arm64 simulator doesn't build for the required
+            # version of Qt, so we build it for x86_64 and run the Rosetta simulator.
+            # Something somewhere is changing LIBSNDFILE_TARGET_OS to 'iphoneos' before the build
+            # gets here. We're done with searching for a needle in a haystack and we're using
+            # a workaround.
+            if(PLATFORM MATCHES "x86_64")       # We must be building for Rosetta simulator.
+                set(LIBSNDFILE_ARCHITECTURE "x86_64")
+                set(LIBSNDFILE_TARGET_OS "iphonesimulator")
+            else()
+                set(LIBSNDFILE_ARCHITECTURE "arm64")
+            endif()
+        else()
+            message(FATAL_ERROR "Unable to determine iOS processor architecture for libsndfile.")
+        endif()
+
+        set (LIBSNDFILE_LIBRARY_SEARCH_PATH ${PROJECT_SOURCE_DIR}/ios_libs/${LIBSNDFILE_TARGET_OS}/${LIBSNDFILE_ARCHITECTURE})
+        message(STATUS "LIBSNDFILE_LIBRARY_SEARCH_PATH: ${LIBSNDFILE_LIBRARY_SEARCH_PATH}")
+
+        set(${_outPath} ${LIBSNDFILE_LIBRARY_SEARCH_PATH} PARENT_SCOPE)
+        set(${_outFound} TRUE PARENT_SCOPE)
+    endif()
+endfunction()
+
 # runs dependency resolution for a single dep
 # - name: the dep name
 # - mode: the mode to resolve in: prebuilt, system, rebuild
 function(_extdeps_run name mode)
-    set(local_path ${LOCAL_ROOT_PATH}/${name})
+    if(IOS)
+        set(_foundAudio FALSE)
+        _find_prebuilt_audio(${name} LIBSNDFILE_LIBRARY_SEARCH_PATH _foundAudio)
+        
+        if (_foundAudio)
+            set(local_path ${LIBSNDFILE_LIBRARY_SEARCH_PATH})
+        else()
+            set(local_path ${LOCAL_ROOT_PATH}/${name})
+        endif()
+    endif()
 
     # read the dep metadata and recipe
     include("${EXTDEPS_DIR}/recipes/${name}/meta.cmake")

@@ -1,3 +1,7 @@
 set(DEP_TARGET Vorbis::vorbis)
-set(DEP_LIBS vorbis vorbisenc vorbisfile)
+if(IOS)
+    set(DEP_LIBS vorbis)
+else()
+    set(DEP_LIBS vorbis vorbisenc vorbisfile)
+endif()
 set(DEP_SYSTEM_HEADER vorbis/codec.h)

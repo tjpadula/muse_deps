@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.24)
 
 get_filename_component(_EXTDEPS_ROOT "${CMAKE_CURRENT_LIST_DIR}" DIRECTORY)
 include("${CMAKE_CURRENT_LIST_DIR}/build_dependency.cmake")
@@ -56,9 +56,10 @@ endfunction()
 # Create one imported interface target
 function(_extdeps_make_target target include_dirs link_libraries)
     if(target AND NOT TARGET ${target})
+        message (STATUS "Creating target: ${target}")
+        message (STATUS "   target include_dirs: ${include_dirs}")
+        message (STATUS "   target link_libraries: ${link_libraries}")
         add_library(${target} INTERFACE IMPORTED GLOBAL)
-        # non-SYSTEM so dep headers have the priority over system headers
-        set_property(TARGET ${target} PROPERTY SYSTEM FALSE)
         target_include_directories(${target} INTERFACE ${include_dirs})
         target_link_libraries(${target} INTERFACE ${link_libraries})
     endif()
@@ -92,6 +93,14 @@ function(_extdeps_resolve_prefix_libs prefix os config libnames out_link out_bun
             if(os STREQUAL "windows")
                 _extdeps_windows_link_name("${prefix}" "${_lib_name}" "${config}" _windows_lib_name)
                 list(APPEND _link_libs "${prefix}/lib/${_windows_lib_name}.lib")
+            elseif(os STREQUAL "ios")
+# IOS_CONFIG_BUG
+# Fix our pre-built paths so they match the new deps system and we don't need to do this silliness.
+                if((_lib_name STREQUAL "ogg") OR (name STREQUAL "vorbis") OR (name STREQUAL "libsndfile"))
+                    list(APPEND _link_libs "${prefix}/lib${_lib_name}.a")
+                else()
+                    list(APPEND _link_libs "${prefix}/lib/lib${_lib_name}.a")
+                endif()
             else()
                 list(APPEND _link_libs "${prefix}/lib/lib${_lib_name}.a")
             endif()
@@ -108,6 +117,8 @@ endfunction()
 
 # Normalize imported target metadata to "target|libs" entries
 macro(_extdeps_target_entries fallback_libs out)
+    message (STATUS "_extdeps_target_entries() DEP_TARGETS: ${DEP_TARGETS}")
+    message (STATUS "_extdeps_target_entries() fallback_libs: ${fallback_libs}")
     if(DEFINED DEP_TARGETS)
         set(${out} "${DEP_TARGETS}")
     else()
@@ -132,9 +143,16 @@ function(_extdeps_resolve_installed name prefix os config)
     set(_primary_link "")
     set(_all_bundle "")
     set(_first TRUE)
+    
+    message (STATUS "_extdeps_resolve_installed() name: ${name}, prefix: ${prefix}, os: ${os}, config: ${config}")
+    
     foreach(_entry ${_entries})
         _extdeps_parse_entry("${_entry}" _target _libs)
         _extdeps_resolve_prefix_libs("${prefix}" "${os}" "${config}" "${_libs}" _link _bundle)
+
+        message (STATUS "_extdeps_resolve_installed() Entry libs: ${_libs}")
+        message (STATUS "_extdeps_resolve_installed() Link list: ${_link}")
+
         foreach(_link_lib ${_link})
             if(NOT EXISTS "${_link_lib}")
                 message(FATAL_ERROR "[${name}] resolved lib missing: ${_link_lib}")
@@ -143,7 +161,11 @@ function(_extdeps_resolve_installed name prefix os config)
         if(_first AND DEP_LINK_DEPS)
             list(APPEND _link ${DEP_LINK_DEPS})
         endif()
+        
+        message (STATUS "_extdeps_resolve_installed() _target: ${_target}, _include_dirs: ${_include_dirs}, _link: ${_link}")
+
         _extdeps_make_target("${_target}" "${_include_dirs}" "${_link}")
+        
         list(APPEND _all_bundle ${_bundle})
         if(_first)
             set(_primary_link "${_link}")
@@ -160,7 +182,24 @@ endfunction()
 function(_extdeps_find_system_libs name libnames out)
     set(_libs "")
     foreach(_lib_name ${libnames})
-        find_library(${name}_LIB_${_lib_name} NAMES ${_lib_name})
+        if(IOS)
+            if(${name} MATCHES "harfbuzz" AND ${HARFBUZZ_INCLUDE_DIR})
+                set(${name}_INC $ENV{QTDIR}/../../${HARFBUZZ_INCLUDE_DIR})
+            elseif (${name} MATCHES "freetype" AND ${FREETYPE_INCLUDE_DIR})
+                set(${name}_INC $ENV{QTDIR}/../../${FREETYPE_INCLUDE_DIR})
+            else()
+                set(IOS_LIB_PATH $ENV{QTDIR}/lib)
+                message (STATUS "Searching for ${name} lib in ${IOS_LIB_PATH}.")
+                find_library(${name}_LIB_${_lib_name}
+                    NAMES ${_lib_name}
+                    PATHS ${QTDIR}/lib)
+                if (NOT ${name}_LIB_${_lib_name})
+                    set (${name}_LIB_${_lib_name} ${QTDIR}/lib/${_lib_name}.a)
+                endif()
+            endif()
+        else()
+            find_library(${name}_LIB_${_lib_name} NAMES ${_lib_name})
+        endif()
         if(NOT ${name}_LIB_${_lib_name})
             message(FATAL_ERROR "[${name}] system lib '${_lib_name}' not found (USE_SYSTEM)")
         endif()
@@ -171,7 +210,34 @@ endfunction()
 
 # SYSTEM mode: find headers + libs on the system
 function(_extdeps_resolve_system name)
-    find_path(${name}_INC NAMES ${DEP_SYSTEM_HEADER})
+    if (IOS)
+    
+        message (STATUS "${name} DEP_SYSTEM_HEADER: ${DEP_SYSTEM_HEADER}")
+        message (STATUS "${name} DEP_LIBS: ${DEP_LIBS}")
+        message (STATUS "${name} DEP_INCLUDE_SUBDIRS: ${DEP_INCLUDE_SUBDIRS}")
+    
+        # The Qt header locations for harfbuzz and freetype are not copied properly to
+        # the expected header location, so we point to the source.
+        if(${name} STREQUAL "harfbuzz" AND ${HARFBUZZ_INCLUDE_DIR})
+            set(${name}_INC $ENV{QTDIR}/../../${HARFBUZZ_INCLUDE_DIR})
+        elseif (${name} STREQUAL "freetype" AND ${FREETYPE_INCLUDE_DIR})
+            set(${name}_INC $ENV{QTDIR}/../../${FREETYPE_INCLUDE_DIR})
+        else()
+            set (IOS_HEADER_PATH $ENV{QTDIR}/include/)
+            message (STATUS "Searching for ${name} header in ${IOS_HEADER_PATH}.")
+            find_path(${name}_INC
+                NAMES ${DEP_SYSTEM_HEADER}
+                PATHS ${IOS_HEADER_PATH})
+            if(NOT ${name}_INC)
+                set(${name}_INC ${IOS_HEADER_PATH}${DEP_SYSTEM_HEADER})
+            endif()
+        endif()
+        if (NOT EXISTS ${${name}_INC})
+            message (FATAL_ERROR "Horse led to water refuses to drink: ${${name}_INC}")
+        endif()
+    else()
+        find_path(${name}_INC NAMES ${DEP_SYSTEM_HEADER})
+    endif()
     if(NOT ${name}_INC)
         message(FATAL_ERROR "[${name}] system header '${DEP_SYSTEM_HEADER}' not found (USE_SYSTEM)")
     endif()
@@ -182,18 +248,31 @@ function(_extdeps_resolve_system name)
     _extdeps_target_entries("${DEP_LIBS}" _entries)
     set(_primary_libs "")
     set(_first TRUE)
+    message (STATUS "${name} _entries: ${_entries}")
     foreach(_entry ${_entries})
         _extdeps_parse_entry("${_entry}" _target _libs)
         _extdeps_find_system_libs("${name}" "${_libs}" _found)
+        message (STATUS "_extdeps_resolve_system() _found: ${_found}")
+        
+        message (STATUS "_target: ${_target}")
+        message (STATUS "_include_dirs: ${_include_dirs}")
+        message (STATUS "_found: ${_found}")
+
         _extdeps_make_target("${_target}" "${_include_dirs}" "${_found}")
         if(_first)
             set(_primary_libs "${_found}")
             set(_first FALSE)
         endif()
     endforeach()
-    set_property(GLOBAL PROPERTY ${name}_INCLUDE_DIRS ${_include_dirs})
-    set_property(GLOBAL PROPERTY ${name}_LIBRARIES ${_primary_libs})
+    set_property(GLOBAL PROPERTY ${name}_INCLUDE_DIRS "${_include_dirs}")
+    set_property(GLOBAL PROPERTY ${name}_LIBRARIES "${_primary_libs}")
     set_property(GLOBAL PROPERTY ${name}_INSTALL_LIBRARIES "")
+    
+    # These are all blank.
+    message (STATUS "_primary_libs: ${_primary_libs}")
+    message (STATUS "${name}_INCLUDE_DIRS: ${${name}_INCLUDE_DIRS}")
+    message (STATUS "${name}_LIBRARIES: ${${name}_LIBRARIES}")
+    message (STATUS "${name}_INSTALL_LIBRARIES: ${${name}_INSTALL_LIBRARIES}")
 endfunction()
 
 # Build from source
@@ -210,6 +289,20 @@ endfunction()
 
 # Fetch a locked prebuilt archive
 function(_extdeps_fetch_prebuilt name local_path os arch version out)
+
+message (STATUS "_EXTDEPS_ROOT: ${_EXTDEPS_ROOT}")
+message (STATUS "_extdeps_fetch_prebuilt() name: ${name}, local_path: ${local_path}, os: ${os}, arch: ${arch}, version: ${version}")
+
+# Special hack to tickle things so we can copy the three sound libraries from our special stash.
+    if(IOS)
+    
+        if(EXISTS ${LIBSNDFILE_LIBRARY_SEARCH_PATH})
+            set(_ok TRUE)
+            set(${out} TRUE PARENT_SCOPE)
+        endif()
+        return()
+    endif()
+    
     set(${out} FALSE PARENT_SCOPE)
     set(_lock_file "${_EXTDEPS_ROOT}/prebuilt.lock")
     if(NOT os OR NOT arch OR NOT EXISTS "${_lock_file}")
@@ -459,6 +552,8 @@ endfunction()
 # Use the prebuilt for this mode/config, else build from source
 function(_extdeps_use_prebuilt mode config out)
     if(NOT mode STREQUAL "rebuild" AND config STREQUAL "RelWithDebInfo")
+        set(${out} TRUE PARENT_SCOPE)
+    elseif(IOS)
         set(${out} TRUE PARENT_SCOPE)
     else()
         set(${out} FALSE PARENT_SCOPE)

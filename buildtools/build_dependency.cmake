@@ -148,6 +148,10 @@ function(_bd_cmake_build srcdir)
     if(BD_DEPENDS_PREFIXES)
         string(APPEND _initial_cache "set(CMAKE_PREFIX_PATH \"${BD_DEPENDS_PREFIXES}\" CACHE STRING \"\" FORCE)\n")
     endif()
+    
+    message(STATUS "_bd_cmake_build srcdir: ${srcdir}")
+    message(STATUS "_bd_cmake_build BD_OS: ${BD_OS}")
+    message(STATUS "_bd_cmake_build BD_ARCH: ${BD_ARCH}")
 
     if(BD_OS STREQUAL "macos")
         if(BD_ARCH STREQUAL "universal")
@@ -166,6 +170,10 @@ function(_bd_cmake_build srcdir)
         file(WRITE "${BUILD}/init.cmake" "${_initial_cache}")
         list(APPEND _configure_args -C "${BUILD}/init.cmake")
     endif()
+    
+    message(STATUS "_bd_cmake_build _configure_args: ${_configure_args}")
+    message(STATUS "_bd_cmake_build BUILD: ${BUILD}")
+    message(STATUS "_bd_cmake_build BD_CONFIG: ${BD_CONFIG}")
 
     # Run configure and build
     _bd_run(${CMAKE_COMMAND} ${_configure_args})
@@ -208,65 +216,8 @@ function(_bd_ensure_sonames os name install_dir)
     endforeach()
 endfunction()
 
-# Patch RPATH so a dep point to its sibling libraries
-function(_bd_relocatable_elf os name install_dir depends_prefixes)
-    if(os STREQUAL "windows" OR os STREQUAL "macos")
-        return()
-    endif()
-
-    if(NOT EXISTS "${install_dir}/lib")
-        return()
-    endif()
-
-    file(GLOB _shared_libs "${install_dir}/lib/*.so" "${install_dir}/lib/*.so.*")
-    if(NOT _shared_libs)
-        return()
-    endif()
-
-    find_program(PATCHELF NAMES patchelf)
-    if(NOT PATCHELF)
-        message(FATAL_ERROR "[${name}] patchelf not found")
-    endif()
-
-    get_filename_component(_install_lib "${install_dir}/lib" ABSOLUTE)
-    set(_rpath_entries "\$ORIGIN")
-    foreach(_prefix ${depends_prefixes})
-        if(EXISTS "${_prefix}/lib")
-            get_filename_component(_dep_lib "${_prefix}/lib" ABSOLUTE)
-            file(RELATIVE_PATH _rel "${_install_lib}" "${_dep_lib}")
-            list(APPEND _rpath_entries "\$ORIGIN/${_rel}")
-        endif()
-    endforeach()
-
-    list(REMOVE_DUPLICATES _rpath_entries)
-    list(JOIN _rpath_entries ":" _rpath)
-
-    foreach(_shared_lib ${_shared_libs})
-        if(IS_SYMLINK "${_shared_lib}")
-            continue()
-        endif()
-
-        execute_process(COMMAND "${PATCHELF}" --print-rpath "${_shared_lib}"
-                        OUTPUT_VARIABLE _current_rpath OUTPUT_STRIP_TRAILING_WHITESPACE
-                        ERROR_QUIET RESULT_VARIABLE _result)
-        if(NOT _result EQUAL 0)
-            continue()
-        endif()
-        if(_current_rpath STREQUAL _rpath)
-            continue()
-        endif()
-
-        execute_process(COMMAND "${PATCHELF}" --set-rpath "${_rpath}" "${_shared_lib}"
-                        RESULT_VARIABLE _result)
-        if(NOT _result EQUAL 0)
-            message(FATAL_ERROR "[${name}] patchelf failed for ${_shared_lib}")
-        endif()
-    endforeach()
-endfunction()
-
-# macOS: make installed dylibs relocatable, and point them at sibling deps'
-# lib directories so transitive runtime dependencies can be found.
-function(_bd_relocatable_macos os name install_dir depends_prefixes)
+# macOS: make installed dylibs relocatable.
+function(_bd_relocatable_macos os install_dir)
     if(NOT os STREQUAL "macos")
         return()
     endif()
@@ -275,23 +226,7 @@ function(_bd_relocatable_macos os name install_dir depends_prefixes)
     if(NOT INSTALL_NAME_TOOL OR NOT OTOOL)
         return()
     endif()
-
     file(GLOB _dylibs "${install_dir}/lib/*.dylib")
-    if(NOT _dylibs)
-        return()
-    endif()
-
-    get_filename_component(_install_lib "${install_dir}/lib" ABSOLUTE)
-    set(_rpath_entries "@loader_path")
-    foreach(_prefix ${depends_prefixes})
-        if(EXISTS "${_prefix}/lib")
-            get_filename_component(_dep_lib "${_prefix}/lib" ABSOLUTE)
-            file(RELATIVE_PATH _rel "${_install_lib}" "${_dep_lib}")
-            list(APPEND _rpath_entries "@loader_path/${_rel}")
-        endif()
-    endforeach()
-    list(REMOVE_DUPLICATES _rpath_entries)
-
     foreach(_dylib ${_dylibs})
         if(IS_SYMLINK "${_dylib}")
             continue()
@@ -300,30 +235,14 @@ function(_bd_relocatable_macos os name install_dir depends_prefixes)
         get_filename_component(_name "${_dylib}" NAME)
         if(NOT _install_name MATCHES "@rpath/")
             execute_process(COMMAND ${INSTALL_NAME_TOOL} -id "@rpath/${_name}" "${_dylib}" ERROR_QUIET)
-            message(STATUS "[${name}] install_name -> @rpath/${_name}")
+            message(STATUS "[${BD_NAME}] install_name -> @rpath/${_name}")
         endif()
-
-        foreach(_entry ${_rpath_entries})
-            execute_process(COMMAND ${INSTALL_NAME_TOOL} -add_rpath "${_entry}" "${_dylib}"
-                            RESULT_VARIABLE _result ERROR_VARIABLE _err)
-            # duplicate entries are expected when re-running
-            if(NOT _result EQUAL 0 AND NOT _err MATCHES "duplicate")
-                message(FATAL_ERROR "[${name}] add_rpath ${_entry} failed for ${_dylib}: ${_err}")
-            endif()
-        endforeach()
     endforeach()
-endfunction()
-
-# Fix up libraries
-function(_bd_fixup_installed os name install_dir depends_prefixes)
-    _bd_ensure_sonames("${os}" "${name}" "${install_dir}")
-    _bd_relocatable_elf("${os}" "${name}" "${install_dir}" "${depends_prefixes}")
-    _bd_relocatable_macos("${os}" "${name}" "${install_dir}" "${depends_prefixes}")
 endfunction()
 
 # Create a signature of the recipe directory and its contents
 function(_bd_recipe_sig recipe_dir os arch out)
-    set(_BD_ENGINE_REV 4)
+    set(_BD_ENGINE_REV 3)
     set(_sig "${_BD_ENGINE_REV}|${os}|${arch}")
     file(GLOB_RECURSE _files "${recipe_dir}/*")
     list(SORT _files)
@@ -378,7 +297,8 @@ function(build_dep)
         file(READ "${_build_stamp}" _prev_sig)
         if(_prev_sig STREQUAL "${_build_sig}")
             message(STATUS "[${BD_NAME}] up-to-date (recipe unchanged), skipping build")
-            _bd_fixup_installed("${BD_OS}" "${BD_NAME}" "${BD_INSTALL_DIR}" "${BD_DEPENDS_PREFIXES}")
+            _bd_ensure_sonames("${BD_OS}" "${BD_NAME}" "${BD_INSTALL_DIR}")
+            _bd_relocatable_macos("${BD_OS}" "${BD_INSTALL_DIR}")
             return()
         endif()
     endif()
@@ -475,7 +395,8 @@ function(build_dep)
     endif()
 
     # Fix-up installed libraries
-    _bd_fixup_installed("${BD_OS}" "${BD_NAME}" "${INSTALL}" "${BD_DEPENDS_PREFIXES}")
+    _bd_ensure_sonames("${BD_OS}" "${BD_NAME}" "${INSTALL}")
+    _bd_relocatable_macos("${BD_OS}" "${INSTALL}")
 
     # Record the build signature
     file(WRITE "${_build_stamp}" "${_build_sig}")
