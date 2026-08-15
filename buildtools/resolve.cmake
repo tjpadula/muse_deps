@@ -187,6 +187,8 @@ function(_extdeps_find_system_libs name libnames out)
                 set(${name}_INC $ENV{QTDIR}/../../${HARFBUZZ_INCLUDE_DIR})
             elseif (${name} MATCHES "freetype" AND ${FREETYPE_INCLUDE_DIR})
                 set(${name}_INC $ENV{QTDIR}/../../${FREETYPE_INCLUDE_DIR})
+#            elseif (${name} MATCHES "png" AND ${LIBPNG_INCLUDE_DIR})
+#                set(${name}_INC $ENV{QTDIR}/../../${LIBPNG_INCLUDE_DIR})
             else()
                 set(IOS_LIB_PATH $ENV{QTDIR}/lib)
                 message (STATUS "Searching for ${name} lib in ${IOS_LIB_PATH}.")
@@ -222,6 +224,8 @@ function(_extdeps_resolve_system name)
             set(${name}_INC $ENV{QTDIR}/../../${HARFBUZZ_INCLUDE_DIR})
         elseif (${name} STREQUAL "freetype" AND ${FREETYPE_INCLUDE_DIR})
             set(${name}_INC $ENV{QTDIR}/../../${FREETYPE_INCLUDE_DIR})
+#        elseif (${name} STREQUAL "png" AND ${LIBPNG_INCLUDE_DIR})
+#            set(${name}_INC $ENV{QTDIR}/../../${LIBPNG_INCLUDE_DIR})
         else()
             set (IOS_HEADER_PATH $ENV{QTDIR}/include/)
             message (STATUS "Searching for ${name} header in ${IOS_HEADER_PATH}.")
@@ -284,7 +288,7 @@ function(_extdeps_build name local_path os arch config)
     build_dep(NAME ${name} RECIPE_DIR "${_EXTDEPS_ROOT}/recipes/${name}"
               OS ${os} ARCH ${arch} CONFIG "${config}"
               WORK "${local_path}/work" INSTALL_DIR "${local_path}"
-              DEPENDS_PREFIXES "${_dep_prefixes}")
+              DEPENDS_PREFIXES "${_dep_prefixes}" STATIC "${DEP_STATIC}")
 endfunction()
 
 # Fetch a locked prebuilt archive
