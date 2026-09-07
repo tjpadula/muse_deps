@@ -146,6 +146,8 @@ function(_extdeps_run name mode)
         else()
             set(local_path ${LOCAL_ROOT_PATH}/${name})
         endif()
+	else()
+		set(local_path ${LOCAL_ROOT_PATH}/${name})
     endif()
 
     # read the dep recipe and metadata
